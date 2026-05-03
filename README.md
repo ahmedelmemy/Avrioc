@@ -21,35 +21,36 @@ Avrioc/
 │       └── DependencyContainer.swift  # Dependency injection container
 │
 ├── Features/Products/
-│   ├── Data/                          # Data layer (how we get data)
+│   ├── Data/                          # Data Layer — how we get data
 │   │   ├── DTOs/ProductDTO.swift      # API response models (Codable)
 │   │   ├── Mappers/ProductMapper.swift # DTO -> Domain transformation
 │   │   └── Repository/ProductRepository.swift  # Network + cache orchestration
 │   │
-│   ├── Domain/                        # Domain layer (what the app works with)
-│   │   └── ProductRepositoryProtocol.swift     # PaginatedProducts + protocol
+│   ├── Domain/                        # Domain Layer — business logic & entities
+│   │   ├── Entities/
+│   │   │   ├── Product.swift          # Domain models (not Codable)
+│   │   │   └── SortOption.swift       # Sort options with display names
+│   │   └── Repositories/
+│   │       └── ProductRepositoryProtocol.swift  # PaginatedProducts + protocol
 │   │
-│   ├── Models/
-│   │   ├── Product.swift              # Domain models (not Codable)
-│   │   └── SortOption.swift           # Sort options with display names
-│   │
-│   ├── ViewModels/
-│   │   ├── ProductsViewModel.swift  # @MainActor, Combine pipeline + state
-│   │   └── ViewState.swift          # Reusable UI state machine enum
-│   └── Views/
-│       ├── ProductList/                 # Product listing screens
-│       │   ├── ProductListView.swift    # Grid/list with search, pagination
-│       │   ├── ProductCardView.swift    # Grid card component
-│       │   └── ProductRowView.swift     # List row component
-│       └── ProductDetail/               # Product detail screens
-│           ├── ProductDetailView.swift  # Detail page composing sub-views
-│           ├── ImageCarouselView.swift  # Swipeable image carousel with cache fallback
-│           ├── ProductInfoView.swift    # Category badge, rating, title, brand
-│           ├── PriceSectionView.swift   # Price, discount, stock status
-│           ├── DescriptionSectionView.swift # Product description
-│           ├── DetailsSectionView.swift # Specs, dimensions, tags
-│           ├── ReviewsSectionView.swift # Star ratings and review comments
-│           └── DetailRow.swift          # Reusable key-value detail row
+│   └── Presentation/                  # Presentation Layer — UI & state management
+│       ├── ViewModels/
+│       │   ├── ProductsViewModel.swift  # @MainActor, Combine pipeline + state
+│       │   └── ViewState.swift          # Reusable UI state machine enum
+│       └── Views/
+│           ├── ProductList/                 # Product listing screens
+│           │   ├── ProductListView.swift    # Grid/list with search, pagination
+│           │   ├── ProductCardView.swift    # Grid card component
+│           │   └── ProductRowView.swift     # List row component
+│           └── ProductDetail/               # Product detail screens
+│               ├── ProductDetailView.swift  # Detail page composing sub-views
+│               ├── ImageCarouselView.swift  # Swipeable image carousel with cache fallback
+│               ├── ProductInfoView.swift    # Category badge, rating, title, brand
+│               ├── PriceSectionView.swift   # Price, discount, stock status
+│               ├── DescriptionSectionView.swift # Product description
+│               ├── DetailsSectionView.swift # Specs, dimensions, tags
+│               ├── ReviewsSectionView.swift # Star ratings and review comments
+│               └── DetailRow.swift          # Reusable key-value detail row
 │
 ├── Shared/
 │   ├── Constants/                       # Centralized strings, icons & colors
@@ -80,6 +81,32 @@ Avrioc/
 ├── AvriocApp.swift                    # App entry with DI setup
 └── ContentView.swift                  # Root view with @StateObject ownership
 ```
+
+## Clean Architecture Layers
+
+### Domain Layer (`Features/Products/Domain/`)
+The innermost layer containing business logic with zero dependencies on external frameworks.
+- **Entities**: Core business models (`Product`, `SortOption`) — framework-agnostic, not `Codable`
+- **Repositories**: Protocol definitions (`ProductRepositoryProtocol`) — contracts the Data layer must fulfill
+
+### Data Layer (`Features/Products/Data/`)
+Implements the Domain layer's repository protocols and handles all external data operations.
+- **DTOs**: Raw `Codable` structs matching the API response exactly (also used for disk caching)
+- **Mappers**: Stateless transformations from DTOs to domain entities, pre-computing values like `discountedPrice`
+- **Repository**: Concrete implementation orchestrating network calls, caching, and DTO-to-domain mapping
+
+### Presentation Layer (`Features/Products/Presentation/`)
+Depends on the Domain layer only — never references Data layer types directly.
+- **ViewModels**: `@MainActor` state management with Combine pipelines for reactive filtering/sorting
+- **Views**: SwiftUI views consuming published state from ViewModels
+
+### Dependency Flow
+```
+Presentation → Domain ← Data
+     │                    │
+     └── depends on ──────┘ (via protocol, not concrete type)
+```
+Views and ViewModels depend on Domain protocols. Data layer implements those protocols. The `DependencyContainer` wires concrete implementations at app launch.
 
 ## Key Architectural Decisions
 
@@ -147,7 +174,7 @@ allProducts ─────────────────────┘
 - `fetchProducts()` cancels any in-flight fetch and pagination requests before starting
 - `refreshProducts()` async wrapper uses `CheckedContinuation` to bridge Combine with `.refreshable`
 - Separate `fetchCancellable` and `paginationCancellable` prevent race conditions
-- `NetworkMonitor` observes NWPathMonitor and auto-triggers `fetchProducts()` when the device goes from offline → online while showing cached data or an error state
+- `NetworkMonitor` observes NWPathMonitor and auto-triggers `fetchProducts()` when the device goes from offline to online while showing cached data or an error state
 - Injectable `networkMonitor: nil` in tests to disable auto-reload and keep tests isolated
 - **Why**: Rapid retry taps or pull-to-refresh won't cause overlapping requests or state corruption. The pull-to-refresh spinner stays visible until the network response actually arrives. Auto-reload ensures the freshest data as soon as connectivity returns.
 
@@ -162,26 +189,26 @@ allProducts ─────────────────────┘
 
 ```
 API Response (JSON)
-    ↓ URLSession.dataTaskPublisher
+    | URLSession.dataTaskPublisher
 ProductResponseDTO (Codable)
-    ├──> Cache (disk write, all pages accumulated)
-    ↓ ProductMapper.mapToDomain
+    |──> Cache (disk write, all pages accumulated)
+    | ProductMapper.mapToDomain
 PaginatedProducts { products, total, isFromCache }
-    ↓ Repository → ViewModel
+    | Repository -> ViewModel
 @Published allProducts
-    ↓ Combine pipeline (filter + sort)
+    | Combine pipeline (filter + sort)
 @Published filteredProducts
-    ↓ SwiftUI binding
+    | SwiftUI binding
 View renders
 
 Network Failure:
     Cache (disk read, all previously loaded pages)
-    → PaginatedProducts { isFromCache: true }
-    → ViewModel shows offline banner with all cached products
+    -> PaginatedProducts { isFromCache: true }
+    -> ViewModel shows offline banner with all cached products
 
 Connectivity Restored (NetworkMonitor):
-    NWPathMonitor detects online → ViewModel.fetchProducts()
-    → Fresh data replaces cached data, offline banner dismissed
+    NWPathMonitor detects online -> ViewModel.fetchProducts()
+    -> Fresh data replaces cached data, offline banner dismissed
 ```
 
 ## Testing Strategy
